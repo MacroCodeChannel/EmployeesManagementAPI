@@ -1,12 +1,16 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+﻿using EmployeesManagementAPI.DatabaseMapping;
+using EmployeesManagementAPI.Models;
+using EmployeesManagementAPI.ViewModels;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using EmployeesManagementAPI.DatabaseMapping;
-using EmployeesManagementAPI.Models;
+using Microsoft.Extensions.Caching.Memory;
+using NuGet.Versioning;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics.Metrics;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace EmployeesManagementAPI.Controllers
 {
@@ -16,34 +20,61 @@ namespace EmployeesManagementAPI.Controllers
     {
         private readonly ApplicationDbContext _context;
 
-        public EmployeesController(ApplicationDbContext context)
+        private readonly IMemoryCache _memorycache;
+
+        public EmployeesController(ApplicationDbContext context, IMemoryCache memoryCache)
         {
             _context = context;
+            _memorycache = memoryCache;
         }
 
-        // GET: api/Employees
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<Employee>>> GetEmployees()
+        public async Task<PaginatedList<Employee>> GetEmployees(int pagesize,int pagenumber)
         {
-            return await _context.Employees.ToListAsync();
+            var allemployees = await _context.Employees
+                .OrderBy(e => e.Id)
+                .Skip((pagenumber - 1) * pagesize)
+                .Take(pagesize)
+                .ToListAsync();
+
+            var count= await _context.Employees.CountAsync();
+            var totalPages = (int)Math.Ceiling(count / (double)pagesize);
+
+           return new PaginatedList<Employee>(allemployees, count, pagenumber, totalPages);
+
         }
 
-        // GET: api/Employees/5
         [HttpGet("{id}")]
         public async Task<ActionResult<Employee>> GetEmployee(int id)
         {
-            var employee = await _context.Employees.FindAsync(id);
-
-            if (employee == null)
+            var cacheKey = $"Employee_{id}";
+            if (_memorycache.TryGetValue(cacheKey, out Employee cachedEmployee))
             {
-                return NotFound();
+
+                return Ok(cachedEmployee);
+            }
+            else
+            {
+                var employee = await _context.Employees.FindAsync(id);
+
+                if (employee == null)
+                {
+                    return NotFound();
+                }
+
+                _memorycache.Set(cacheKey, employee, new MemoryCacheEntryOptions
+                {
+                    SlidingExpiration = TimeSpan.FromMinutes(10),
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1)
+                });
+
+                return Ok(employee);
             }
 
-            return employee;
         }
 
-        // PUT: api/Employees/5
-        // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
+
+
         [HttpPut("{id}")]
         public async Task<IActionResult> PutEmployee(int id, Employee employee)
         {
